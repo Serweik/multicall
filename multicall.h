@@ -89,13 +89,13 @@ namespace multicall
 		McFunctionIdImpl(const McFunctionIdImpl& other) noexcept : m_impl(other.clone_impl_to(m_small_starage_buffer)) {}
 		McFunctionIdImpl(McFunctionIdImpl&& other) noexcept : m_impl(other.move_impl_to(m_small_starage_buffer)) {}
 
-		McFunctionIdImpl& operator = (const McFunctionIdImpl& other) {
+		McFunctionIdImpl& operator = (const McFunctionIdImpl& other) noexcept {
 			if (&other == this) { return *this; }
 			deleteImpl();
 			m_impl = other.clone_impl_to(m_small_starage_buffer);
 			return *this;
 		}
-		McFunctionIdImpl& operator = (McFunctionIdImpl&& other) {
+		McFunctionIdImpl& operator = (McFunctionIdImpl&& other) noexcept {
 			if (&other == this) { return *this; }
 			deleteImpl();
 			m_impl = other.move_impl_to(m_small_starage_buffer);
@@ -207,7 +207,7 @@ namespace multicall
 
 		static const inline size_t m_magical_constant = 0x9e3779b9;
 
-		void deleteImpl() {
+		void deleteImpl() noexcept {
 			if (m_impl) {
 				if (reinterpret_cast<const size_t*>(m_small_starage_buffer)[0] == m_magical_constant &&
 					reinterpret_cast<const size_t*>(m_small_starage_buffer)[1] == m_magical_constant)
@@ -222,7 +222,7 @@ namespace multicall
 			}
 		}
 
-		InternalImplBase* clone_impl_to(void* buffer) const {
+		InternalImplBase* clone_impl_to(void* buffer) const noexcept {
 			if (m_impl) {
 				if (reinterpret_cast<const size_t*>(m_small_starage_buffer)[0] == m_magical_constant &&
 					reinterpret_cast<const size_t*>(m_small_starage_buffer)[1] == m_magical_constant)
@@ -237,7 +237,7 @@ namespace multicall
 			return nullptr;
 		}
 
-		InternalImplBase* move_impl_to(void* buffer) {
+		InternalImplBase* move_impl_to(void* buffer) noexcept {
 			if (m_impl) {
 				if (reinterpret_cast<const size_t*>(m_small_starage_buffer)[0] == m_magical_constant &&
 					reinterpret_cast<const size_t*>(m_small_starage_buffer)[1] == m_magical_constant)
