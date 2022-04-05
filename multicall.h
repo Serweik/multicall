@@ -24,7 +24,60 @@
 #define MC_DECLARE_INTERFACE(interfaceType) using __MC_IINTERFACE = interfaceType;
 #define MC_DECLARE_SIGNAL(signal_name) virtual void signal_name final {};
 
-namespace multicall {
+//Just for test. Don't use it.
+#define MC_CONFIG_USE_SPINLOCK 0
+
+namespace multicall 
+{
+
+#if MC_CONFIG_USE_SPINLOCK == 1
+	struct SpinSharedMutex {
+		std::atomic<int> unique_lock_counter{ 0 };
+		std::atomic<int> shared_lock_counter{ 0 };
+		std::atomic_flag unique_lock_flag{ ATOMIC_FLAG_INIT };
+
+		inline void lock() noexcept {
+			while (unique_lock_flag.test_and_set(std::memory_order_acquire));
+			++unique_lock_counter;
+			while (shared_lock_counter);
+		}
+		inline void unlock() noexcept {
+			--unique_lock_counter;
+			unique_lock_flag.clear(std::memory_order_release);
+		}
+
+		inline void lock_shared() noexcept {
+			while (unique_lock_counter);
+			++shared_lock_counter;
+		}
+		inline void unlock_shared() noexcept {
+			--shared_lock_counter;
+		}
+	};
+#else
+	struct SpinSharedMutex {
+		std::atomic<int> unique_lock_counter{ 0 }; //To avoid situation when shared_lock is alwais get the lock and unique_lock is wait most time
+		std::shared_mutex mutex;
+
+		inline void lock() noexcept {
+			++unique_lock_counter;
+			mutex.lock();
+		}
+		inline void unlock() noexcept {
+			--unique_lock_counter;
+			mutex.unlock();
+		}
+
+		inline void lock_shared() noexcept {
+			while (unique_lock_counter);
+			mutex.lock_shared();
+		}
+		inline void unlock_shared() noexcept {
+			mutex.unlock_shared();
+		}
+	};
+#endif
+
 
 	class McFunctionId;
 	class MultiCallBase;
@@ -64,8 +117,16 @@ namespace multicall {
 			size_t hash() const noexcept {
 				const auto [data, size] = rawData();
 				size_t result = 0;
-				for (size_t i = 0; i < size; ++i) {
-					hash_combine(result, data[i]);
+				if (size % sizeof(size_t) == 0) {
+					const size_t new_size = size / sizeof(size_t);
+					const size_t* new_data = reinterpret_cast<const size_t*>(data);
+					for (size_t i = 0; i < new_size; ++i) {
+						hash_combine(result, new_data[i]);
+					}
+				}else {
+					for (size_t i = 0; i < size; ++i) {
+						hash_combine(result, data[i]);
+					}
 				}
 				return result;
 			};
@@ -266,7 +327,6 @@ namespace multicall {
 		McFunctionId m_func_id;
 	};
 
-
 	class MultiCallBase
 	{
 	public:
@@ -275,7 +335,7 @@ namespace multicall {
 		};
 
 		inline void DisconnectFromAll() {
-			std::unique_lock lock(__m_mutex);
+			std::unique_lock locker(__m_mutex);
 			for (auto& [reciever_id, senders] : __m_senders_map) {
 				for (auto& sender : senders) {
 					MultiCallBase* sender_obj = sender.getObject();
@@ -393,30 +453,30 @@ namespace multicall {
 
 	protected:
 		inline virtual bool addSubscriber(const McFunctionId& signal_id, const McFunctionId& subscriber_id, const std::any& func) {
-			std::unique_lock lock(__m_mutex);
+			std::unique_lock locker(__m_mutex);
 			__m_mc_recievers_map[signal_id][subscriber_id] = func;
 			return true;
 		}
 
 		inline virtual bool removeSubscriber(const McFunctionId& signal_id, McFunctionId subscriber_id) {
-			std::unique_lock lock(__m_mutex);
+			std::unique_lock locker(__m_mutex);
 			__m_mc_recievers_map[signal_id].erase(subscriber_id);
 			return true;
 		}
 
 		inline virtual void addSender(const McFunctionId& sender_id, const McFunctionId& subscriber_id) {
-			std::unique_lock lock(__m_mutex);
+			std::unique_lock locker(__m_mutex);
 			__m_senders_map[subscriber_id].insert(sender_id);
 		}
 
 		inline virtual void removeSender(const McFunctionId& sender_id, const McFunctionId& subscriber_id) {
-			std::unique_lock lock(__m_mutex);
+			std::unique_lock locker(__m_mutex);
 			__m_senders_map[subscriber_id].erase(sender_id);
 		}
 
 		template<class... _Signature>
 		inline void McEmit(const McSignal<_Signature...>& signal_id, _Signature... args) {
-			std::shared_lock lock(__m_mutex);
+			std::shared_lock locker(__m_mutex);
 			auto subscribers_it = __m_mc_recievers_map.find(signal_id.m_func_id);
 			if (subscribers_it != __m_mc_recievers_map.end()) {
 				for (auto& [_, func] : subscribers_it->second) {
@@ -431,6 +491,6 @@ namespace multicall {
 		using __SendersStorage = std::unordered_set<McFunctionId, McFunctionIdHash>;
 		std::unordered_map<McFunctionId, __RecieversStorage, McFunctionIdHash> __m_mc_recievers_map;
 		std::unordered_map<McFunctionId, __SendersStorage, McFunctionIdHash> __m_senders_map;
-		std::shared_mutex __m_mutex;
+		SpinSharedMutex __m_mutex;
 	};
 };

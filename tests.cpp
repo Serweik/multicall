@@ -54,6 +54,21 @@ void Test_connect_disconnect_to_member() {
     }
 }
 
+void Test_connect_disconnect_to_member_no_overload() {
+    auto object1 = global_factory.createSender(Factory::Type3);
+    Reciever reciever;
+    for (int i = 0; i < 10; ++i) {
+        int old_counter = reciever.counter;
+        MultiCallBase::Connect(McSignal(object1.get(), &SenderInterface::tick2), &reciever, &Reciever::new_tick);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        MultiCallBase::Disconnect(McSignal(object1.get(), &SenderInterface::tick2), &reciever, &Reciever::new_tick);
+        assert(old_counter != reciever.counter);
+        old_counter = reciever.counter;
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        assert(old_counter == reciever.counter);
+    }
+}
+
 void Test_connect_disconnect_to_static_function() {
     auto object1 = global_factory.createSender(Factory::Type1);
     for (int i = 0; i < 10; ++i) {
@@ -162,6 +177,7 @@ int main() {
     std::cout << "start unit tests" << std::endl;
 
     Test_connect_disconnect_to_member();
+    Test_connect_disconnect_to_member_no_overload();
     Test_connect_disconnect_to_static_function();
     Test_connect_disconnect_to_lambda();
     Test_two_senders();
@@ -174,6 +190,8 @@ int main() {
     Test_lambda_call_counter();
 
     std::cout << "all tests are successfully passed!" << std::endl;
+    
+    system("pause");
 
     return 0;
 }

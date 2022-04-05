@@ -6,7 +6,7 @@ namespace
 
 	class SenderType1 : public SenderInterface, public MultiCallBase {
 	public:
-		SenderType1() {
+		SenderType1(bool call_tick2 = false) : call_tick2_(call_tick2) {
 			m_thread = std::thread(&SenderType1::senderThread, this);
 		}
 		~SenderType1() {
@@ -18,13 +18,15 @@ namespace
 		std::thread m_thread;
 		bool working = true;
 		int counter = 0;
+		bool call_tick2_ = false;
 
 		void senderThread() {
 			while (working) {
 				counter = counter > 2000000 ? 0 : ++counter;
-				McEmit(McSignal<int>(this, &SenderInterface::tick), counter);
-
-				std::this_thread::sleep_for(std::chrono::microseconds(1));
+				if(!call_tick2_)
+					McEmit(McSignal<int>(this, &SenderInterface::tick), counter);
+				else
+					McEmit(McSignal(this, &SenderInterface::tick2), counter);
 			}
 		}
 	};
@@ -51,8 +53,6 @@ namespace
 			while (working) {
 				counter = counter > 2000000 ? 0 : ++counter;
 				McEmit(McSignal<int>(this, &SenderInterface::tick), counter);
-
-				std::this_thread::sleep_for(std::chrono::microseconds(1));
 			}
 		}
 		void senderThread2() {
@@ -60,8 +60,6 @@ namespace
 				int temp_counter = counter;
 				std::string val = "counter = " + std::to_string(temp_counter) + "\n";
 				McEmit(McSignal<int, std::string>(this, &SenderInterface::tick), temp_counter, val);
-
-				std::this_thread::sleep_for(std::chrono::microseconds(1));
 			}
 		}
 	};
@@ -74,6 +72,8 @@ std::shared_ptr<SenderInterface> Factory::createSender(SenderType type)
 			return std::make_shared<SenderType1>();
 		case Type2:
 			return std::make_shared<SenderType2>();
+		case Type3:
+			return std::make_shared<SenderType1>(true);
 	};
 	return nullptr;
 }
