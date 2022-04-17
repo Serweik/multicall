@@ -9,16 +9,14 @@
 
 #include <unordered_map>
 #include <unordered_set>
-#include <any>
 #include <functional>
 #include <cassert>
 #include <memory>
 #include <map>
-#include <vector>
 #include <mutex>
 #include <shared_mutex>
 #include <atomic>
-#include <thread>
+#include <tuple>
 #include <string.h>
 
 #define MC_DECLARE_INTERFACE(interfaceType) using __MC_IINTERFACE = interfaceType;
@@ -78,6 +76,61 @@ namespace multicall
 	};
 #endif
 
+	/// <summary>
+	/// Dynamic arguments dispatcher. Found here: https://rextester.com/AKLW78695
+	/// A little modifed to be able to work with lambdas.
+	/// It allows to create virtual functions with variadic number of arguments
+	/// </summary>
+	template <typename F>
+	struct ArgumentPack;
+
+	struct Argument
+	{
+	public:
+		template <typename Signature, typename Derived>
+		inline void try_to_dispatch(Derived& x, Signature(Derived::* fp)) const	{
+			auto pack = dynamic_cast<ArgumentPack<Signature> const*>(this);
+			assert(pack && "Viable function not found!");
+			pack->dispatch(x, fp);
+		}
+
+		template <typename Signature, typename F>
+		inline void try_to_dispatch(F& fp) const {
+			auto pack = dynamic_cast<ArgumentPack<Signature> const*>(this);
+			assert(pack && "Viable function not found!");
+			pack->dispatch(fp);
+		}
+
+		inline virtual ~Argument()	{}
+	};
+
+	template <typename ...Args>
+	struct ArgumentPack<void(Args...)>
+		: Argument, std::tuple<Args...>
+	{
+		using std::tuple<Args...>::tuple;
+
+		template <typename Derived, typename F>
+		inline void dispatch(Derived& x, F(Derived::* fp)) const {
+			dispatch(x, fp, std::make_index_sequence<sizeof...(Args)>{});
+		}
+
+		template <typename F>
+		inline void dispatch(F& fp) const {
+			dispatch(fp, std::make_index_sequence<sizeof...(Args)>{});
+		}
+
+	private:
+		template <typename Derived, typename F, size_t ...Indexes>
+		inline void dispatch(Derived& x, F(Derived::* fp), std::index_sequence<Indexes...>) const {
+			(x.*fp)(std::get<Indexes>(*this)...);
+		}
+
+		template <typename F, size_t ...Indexes>
+		inline void dispatch(F& fp, std::index_sequence<Indexes...>) const {
+			fp(std::get<Indexes>(*this)...);
+		}
+	};
 
 	class McFunctionId;
 	class MultiCallBase;
@@ -85,24 +138,30 @@ namespace multicall
 	class McFunctionIdImpl final {
 	public:
 		McFunctionIdImpl() = default;
-		~McFunctionIdImpl() noexcept { deleteImpl(); }
-		McFunctionIdImpl(const McFunctionIdImpl& other) noexcept : m_impl(other.clone_impl_to(m_small_starage_buffer)) {}
-		McFunctionIdImpl(McFunctionIdImpl&& other) noexcept : m_impl(other.move_impl_to(m_small_starage_buffer)) {}
+		inline ~McFunctionIdImpl() noexcept { deleteImpl(); }
+		inline McFunctionIdImpl(const McFunctionIdImpl& other) noexcept : m_impl(other.clone_impl_to(m_small_starage_buffer)) {}
+		inline McFunctionIdImpl(McFunctionIdImpl&& other) noexcept : m_impl(other.move_impl_to(m_small_starage_buffer)) {}
 
-		McFunctionIdImpl& operator = (const McFunctionIdImpl& other) noexcept {
+		inline McFunctionIdImpl& operator = (const McFunctionIdImpl& other) noexcept {
 			if (&other == this) { return *this; }
 			deleteImpl();
 			m_impl = other.clone_impl_to(m_small_starage_buffer);
 			return *this;
 		}
-		McFunctionIdImpl& operator = (McFunctionIdImpl&& other) noexcept {
+		inline McFunctionIdImpl& operator = (McFunctionIdImpl&& other) noexcept {
 			if (&other == this) { return *this; }
 			deleteImpl();
 			m_impl = other.move_impl_to(m_small_starage_buffer);
 			return *this;
 		}
 
-		bool isValid() const noexcept { return bool(m_impl); }
+		inline bool isValid() const noexcept { return bool(m_impl); }
+
+		template<class ...Args>
+		inline void call(Args && ...args) const noexcept {
+			const Argument& a = ArgumentPack<void(Args...)>(std::forward<Args>(args)...);
+			m_impl->call(a);
+		}
 
 		struct InternalImplBase {
 			virtual ~InternalImplBase() = default;
@@ -114,7 +173,9 @@ namespace multicall
 			virtual std::pair<const uint8_t* const, size_t> rawData() const noexcept = 0;
 			virtual MultiCallBase* getObject() const noexcept = 0;
 
-			size_t hash() const noexcept {
+			virtual void call(const Argument&) const noexcept = 0;
+
+			inline size_t hash() const noexcept {
 				const auto [data, size] = rawData();
 				size_t result = 0;
 				if (size % sizeof(size_t) == 0) {
@@ -130,7 +191,7 @@ namespace multicall
 				}
 				return result;
 			};
-			bool compare(InternalImplBase* other) const noexcept {
+			inline bool compare(InternalImplBase* other) const noexcept {
 				const auto [data, size] = rawData();
 				const auto [other_data, other_size] = other->rawData();
 				if (size == other_size) {
@@ -158,12 +219,12 @@ namespace multicall
 			F func;
 		};
 
-		template<class T, class F>
+		template<class T, class F, class ...Args>
 		struct InternalImplMember : InternalImplBase {
 			InternalImplMember(T* obj, F func) noexcept { raw_data.storage.object = obj; raw_data.storage.func = func; }
-			virtual InternalImplBase* clone_to(void* buffer) noexcept { return new(buffer) InternalImplMember<T, F>(*this); }; //for placement new only!
-			virtual InternalImplBase* clone_to() noexcept {return new InternalImplMember<T, F>(*this);};
-			virtual InternalImplBase* move_to(void* buffer) noexcept { return new(buffer) InternalImplMember<T, F>(std::move(*this)); }; //for placement new only!
+			virtual InternalImplBase* clone_to(void* buffer) noexcept { return new(buffer) InternalImplMember<T, F, Args...>(*this); }; //for placement new only!
+			virtual InternalImplBase* clone_to() noexcept {return new InternalImplMember<T, F, Args...>(*this);};
+			virtual InternalImplBase* move_to(void* buffer) noexcept { return new(buffer) InternalImplMember<T, F, Args...>(std::move(*this)); }; //for placement new only!
 			virtual InternalImplBase* move_to() noexcept { return this; };
 			
 			union RawData {
@@ -171,21 +232,25 @@ namespace multicall
 				uint8_t data[sizeof(IdMemberStorage<T, F>)];
 			};
 			RawData raw_data;
-			std::pair<const uint8_t* const, size_t> rawData() const noexcept override {
+			inline std::pair<const uint8_t* const, size_t> rawData() const noexcept override {
 				return std::make_pair(raw_data.data, sizeof(raw_data.data));
 			}
-			MultiCallBase* getObject() const noexcept override {
+			inline MultiCallBase* getObject() const noexcept override {
 				MultiCallBase* base_prt = dynamic_cast<MultiCallBase*>(raw_data.storage.object);
 				return base_prt;
 			}
+
+			inline void call(const Argument& args) const noexcept override {
+				args.try_to_dispatch<void(Args...)>(*raw_data.storage.object, raw_data.storage.func);
+			}
 		};
 
-		template<class F>
+		template<class F, class ...Args>
 		struct InternalImplFunction : InternalImplBase {
 			InternalImplFunction(F func) noexcept : raw_data{ func } {}
-			virtual InternalImplBase* clone_to(void* buffer) noexcept { return new(buffer) InternalImplFunction<F>(*this); }; //for placement new only!
-			virtual InternalImplBase* clone_to() noexcept { return new InternalImplFunction<F>(*this); };
-			virtual InternalImplBase* move_to(void* buffer) noexcept { return new(buffer) InternalImplFunction<F>(std::move(*this)); }; //for placement new only!
+			virtual InternalImplBase* clone_to(void* buffer) noexcept { return new(buffer) InternalImplFunction<F, Args...>(*this); }; //for placement new only!
+			virtual InternalImplBase* clone_to() noexcept { return new InternalImplFunction<F, Args...>(*this); };
+			virtual InternalImplBase* move_to(void* buffer) noexcept { return new(buffer) InternalImplFunction<F, Args...>(std::move(*this)); }; //for placement new only!
 			virtual InternalImplBase* move_to() noexcept { return this; };
 
 			union RawData {
@@ -193,11 +258,15 @@ namespace multicall
 				uint8_t data[sizeof(IdFunctionStorage<F>)];
 			};
 			RawData raw_data;
-			std::pair<const uint8_t* const, size_t> rawData() const noexcept override {
+			inline std::pair<const uint8_t* const, size_t> rawData() const noexcept override {
 				return std::make_pair(raw_data.data, sizeof(raw_data.data));
 			}
-			MultiCallBase* getObject() const noexcept override {
+			inline MultiCallBase* getObject() const noexcept override {
 				return nullptr;
+			}
+
+			inline void call(const Argument& args) const noexcept override {
+				args.try_to_dispatch<void(Args...)>(raw_data.storage.func);
 			}
 		};
 
@@ -257,56 +326,66 @@ namespace multicall
 
 		friend McFunctionId;
 
-		template<class T, class F>
-		void setContent(T* obj, F func) noexcept {
+		template<class ...Args, class T, class F>
+		inline void setContent(T* obj, F func) noexcept {
 			static_assert(std::is_member_function_pointer_v<F>);
 			deleteImpl();
-			if constexpr (sizeof(InternalImplMember<T, F>) < sizeof(m_small_starage_buffer)) {
-				m_impl = new(m_small_starage_buffer) InternalImplMember<T, F>(obj, func);
+			if constexpr (sizeof(InternalImplMember<T, F, Args...>) < sizeof(m_small_starage_buffer)) {
+				m_impl = new(m_small_starage_buffer) InternalImplMember<T, F, Args...>(obj, func);
 			}else {
 				reinterpret_cast<size_t*>(m_small_starage_buffer)[0] = m_magical_constant;
 				reinterpret_cast<size_t*>(m_small_starage_buffer)[1] = m_magical_constant; //to understand that it wasn't used
-				m_impl = new InternalImplMember<T, F>(obj, func);
+				m_impl = new InternalImplMember<T, F, Args...>(obj, func);
 			}
 		}
-		template<class F>
-		void setContent(F func) noexcept {
+		template<class ...Args, class F>
+		inline void setContent(F func) noexcept {
 			//static_assert(std::is_member_function_pointer_v<F>);
 			deleteImpl();
-			if constexpr (sizeof(InternalImplFunction<F>) < sizeof(m_small_starage_buffer)) {
-				m_impl = new(m_small_starage_buffer) InternalImplFunction<F>(func);
+			if constexpr (sizeof(InternalImplFunction<F, Args...>) < sizeof(m_small_starage_buffer)) {
+				m_impl = new(m_small_starage_buffer) InternalImplFunction<F, Args...>(func);
 			}else {
 				reinterpret_cast<size_t*>(m_small_starage_buffer)[0] = m_magical_constant;
 				reinterpret_cast<size_t*>(m_small_starage_buffer)[1] = m_magical_constant; //to understand that it wasn't used
-				m_impl = new InternalImplFunction<F>(func);
+				m_impl = new InternalImplFunction<F, Args...>(func);
 			}
 		}
 
-		bool operator == (const McFunctionIdImpl& other) const { return m_impl->compare(other.m_impl); }
-		size_t hash() const { return m_impl->hash(); }
-		MultiCallBase* getObject() const noexcept { return m_impl->getObject(); }
+		inline bool operator == (const McFunctionIdImpl& other) const noexcept { return m_impl->compare(other.m_impl); }
+		inline size_t hash() const noexcept { return m_impl->hash(); }
+		inline MultiCallBase* getObject() const noexcept { return m_impl->getObject(); }
 	};
+
+	template<class ...Args>
+	struct ArgsPlaceholder {};
 
 	class McFunctionId {
 	public:
 		McFunctionId() = default;
-		template<class T, class F>
-		McFunctionId(T* obj, F func) noexcept { m_impl.setContent(obj, func); }
 
-		template<class ..._Signature, class T>
-		McFunctionId(T* obj, void(T::* func)(_Signature...)) noexcept { m_impl.setContent(obj, func); }
+		template<class ...Args>
+		inline McFunctionId(void(*func)(Args...)) noexcept { m_impl.setContent<Args...>(func); }
 
-		template<class F>
-		McFunctionId(F func) noexcept { m_impl.setContent(func); }
+		template<class ...Args, class T>
+		inline McFunctionId(T* obj, void(T::* func)(Args...)) noexcept { m_impl.setContent<Args...>(obj, func); }
 
-		bool operator == (const McFunctionId& other) const noexcept {
+		template<class ...Args, class F>
+		inline McFunctionId(ArgsPlaceholder<Args...>, F func) noexcept { m_impl.setContent<Args...>(func); }
+
+		inline bool operator == (const McFunctionId& other) const noexcept {
 			return (m_impl.isValid() && (m_impl.isValid() == other.m_impl.isValid())) ? m_impl == other.m_impl : false;
 		}
-		size_t hash() const noexcept { return m_impl.isValid() ? m_impl.hash() : 0; }
-		MultiCallBase* getObject() const noexcept { return m_impl.isValid() ? m_impl.getObject() : nullptr; }
+		inline size_t hash() const noexcept { return m_impl.isValid() ? m_impl.hash() : 0; }
+		inline MultiCallBase* getObject() const noexcept { return m_impl.isValid() ? m_impl.getObject() : nullptr; }
+
+		template<class ...Args>
+		inline void call(Args && ...args) const noexcept {
+			m_impl.call(std::forward<Args>(args)...);
+		}
 
 	private:
 		McFunctionIdImpl m_impl;
+		bool m_active = true;
 	};
 
 	struct McFunctionIdHash
@@ -345,7 +424,7 @@ namespace multicall
 				}
 			}
 			for (auto& [sender_id, recievers] : __m_mc_recievers_map) {
-				for (auto& [reciever, _] : recievers) {
+				for (auto& reciever : recievers) {
 					MultiCallBase* reciever_obj = reciever.getObject();
 					if (reciever_obj) {
 						reciever_obj->removeSender(sender_id, reciever);
@@ -366,12 +445,8 @@ namespace multicall
 				//std::cerr << "Reciever doesn't inherits to MultiCallBase!\n";
 				return std::make_pair(false, McFunctionId());
 			}
-			std::function<void(_Signature...)> func = [callback, a_ptr = reciever](_Signature... args) {
-				(a_ptr->*callback)(args...);
-			};
-
 			McFunctionId reciever_id(reciever, callback);
-			const bool result = sender_object->addSubscriber(sender_id.m_func_id, reciever_id, func);
+			const bool result = sender_object->addSubscriber(sender_id.m_func_id, reciever_id);
 			if (result) {
 				reciever_object->addSender(sender_id.m_func_id, reciever_id);
 			}
@@ -385,11 +460,8 @@ namespace multicall
 				//std::cerr << "Sender doesn't inherits to MultiCallBase!\n";
 				return std::make_pair(false, McFunctionId());
 			}
-			std::function<void(_Signature...)> func = [callback](_Signature... args) {
-				callback(args...);
-			};
 			McFunctionId reciever_id(callback);
-			const bool result = sender_object->addSubscriber(sender_id.m_func_id, reciever_id, func);
+			const bool result = sender_object->addSubscriber(sender_id.m_func_id, reciever_id);
 			return std::make_pair(result, reciever_id);
 		}
 
@@ -401,11 +473,8 @@ namespace multicall
 				//std::cerr << "Sender doesn't inherits to MultiCallBase!\n";
 				return std::make_pair(false, McFunctionId());
 			}
-			std::function<void(_Signature...)> func = [callback](_Signature... args) {
-				callback(args...);
-			};
-			McFunctionId reciever_id(callback);
-			const bool result = sender_object->addSubscriber(sender_id.m_func_id, reciever_id, func);
+			McFunctionId reciever_id(ArgsPlaceholder<_Signature...>{}, callback);
+			const bool result = sender_object->addSubscriber(sender_id.m_func_id, reciever_id);
 			return std::make_pair(result, reciever_id);
 		}
 
@@ -452,9 +521,9 @@ namespace multicall
 
 
 	protected:
-		inline virtual bool addSubscriber(const McFunctionId& signal_id, const McFunctionId& subscriber_id, const std::any& func) {
+		inline virtual bool addSubscriber(const McFunctionId& signal_id, const McFunctionId& subscriber_id) {
 			std::unique_lock locker(__m_mutex);
-			__m_mc_recievers_map[signal_id][subscriber_id] = func;
+			__m_mc_recievers_map[signal_id].insert(subscriber_id);
 			return true;
 		}
 
@@ -479,15 +548,16 @@ namespace multicall
 			std::shared_lock locker(__m_mutex);
 			auto subscribers_it = __m_mc_recievers_map.find(signal_id.m_func_id);
 			if (subscribers_it != __m_mc_recievers_map.end()) {
-				for (auto& [_, func] : subscribers_it->second) {
-					const auto& call_fn = std::any_cast<std::function<void(_Signature...)>>(func);
-					call_fn(std::forward<_Signature>(args)...);
+				auto subscribers_copy = subscribers_it->second;
+				locker.unlock();
+				for (auto& funcId : subscribers_copy) {
+					funcId.call(std::forward<_Signature>(args)...);
 				}
 			}
 		}
 
 	private:
-		using __RecieversStorage = std::unordered_map<McFunctionId, std::any, McFunctionIdHash>;
+		using __RecieversStorage = std::unordered_set<McFunctionId, McFunctionIdHash>;
 		using __SendersStorage = std::unordered_set<McFunctionId, McFunctionIdHash>;
 		std::unordered_map<McFunctionId, __RecieversStorage, McFunctionIdHash> __m_mc_recievers_map;
 		std::unordered_map<McFunctionId, __SendersStorage, McFunctionIdHash> __m_senders_map;

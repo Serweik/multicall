@@ -50,7 +50,7 @@ void Test_connect_disconnect_to_member() {
         assert(old_counter != reciever.counter);
         old_counter = reciever.counter;
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        assert(old_counter == reciever.counter);
+        assert(reciever.counter - old_counter < 2);
     }
 }
 
@@ -65,7 +65,7 @@ void Test_connect_disconnect_to_member_no_overload() {
         assert(old_counter != reciever.counter);
         old_counter = reciever.counter;
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        assert(old_counter == reciever.counter);
+        assert(reciever.counter - old_counter < 2); //If McEmit() was able to start emitting before we called Disconnect(), the emit will be executed 
     }
 }
 
@@ -79,7 +79,7 @@ void Test_connect_disconnect_to_static_function() {
         assert(old_counter != global_counter);
         old_counter = global_counter;
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        assert(old_counter == global_counter);
+        assert(global_counter - old_counter < 2);
     }
     global_counter = 0;
 }
@@ -98,7 +98,7 @@ void Test_connect_disconnect_to_lambda() {
         assert(old_counter != reciever.counter);
         old_counter = reciever.counter;
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        assert(old_counter == reciever.counter);
+        assert(reciever.counter - old_counter < 2);
     }
 }
 
